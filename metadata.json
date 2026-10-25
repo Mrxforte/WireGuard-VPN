@@ -1,0 +1,6 @@
+{
+  "name": "Satellite VPN",
+  "description": "High-performance WireGuard VPN client with FastAPI backend authentication, dynamic peer configuration, and real network lifecycle management.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

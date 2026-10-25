@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  wireguard-fastapi:
+    build: .
+    container_name: wireguard_vpn_controller
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    volumes:
+      - /lib/modules:/lib/modules:ro
+    ports:
+      - "8000:8000"
+      - "51820:51820/udp"
+    environment:
+      - WG_SERVER_PUBLIC_KEY=bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wMbCXo=
+      - WG_SERVER_ENDPOINT=10.0.2.2:51820
+      - WG_INTERFACE=wg0
+    restart: unless-stopped
