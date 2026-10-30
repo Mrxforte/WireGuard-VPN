@@ -5,11 +5,17 @@ import android.content.Intent
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.vpn.data.VpnRepository
+import com.example.vpn.model.ConnectionDiagnostics
+import com.example.vpn.model.ConnectionVerificationReport
 import com.example.vpn.model.PeerConfigResponse
+import com.example.vpn.model.RegisteredDevice
 import com.example.vpn.model.SecurityLeakStatus
-import com.example.vpn.model.VpnConnectionState
+import com.example.vpn.model.SmartConnectionSettings
+import com.example.vpn.model.VpnProtocol
 import com.example.vpn.model.VpnServer
+import com.example.vpn.model.VpnSessionState
 import com.example.vpn.model.VpnTunnelStats
+import com.example.vpn.orchestrator.ConnectionOrchestrator
 import com.example.vpn.service.VpnActionReceiver
 import com.example.vpn.service.VpnNotificationManager
 import com.example.vpn.wireguard.WireGuardVpnManager
@@ -24,27 +30,39 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
- * ViewModel managing VPN connection state, FastAPI server communication,
- * peer key exchange, lease renewals, and telemetry updates.
+ * Enterprise ViewModel orchestrating multi-protocol VPN connections,
+ * enforcing the fail-closed Connection Quality Gate, managing Django REST API
+ * sessions, and syncing real-time diagnostics.
  */
 class VpnViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repository = VpnRepository(application)
-    private val vpnManager = WireGuardVpnManager(application)
+    private val wireGuardManager = WireGuardVpnManager(application)
     private val notificationManager = VpnNotificationManager(application)
 
-    val connectionState: StateFlow<VpnConnectionState> = vpnManager.connectionState
-    val stats: StateFlow<VpnTunnelStats> = vpnManager.stats
-    val wireGuardError: StateFlow<String?> = vpnManager.lastErrorMessage
+    val orchestrator = ConnectionOrchestrator(application, wireGuardManager)
+
+    // Authoritative State Machine
+    val connectionState: StateFlow<VpnSessionState> = orchestrator.sessionState
+    val activeProtocol: StateFlow<VpnProtocol> = orchestrator.activeProtocol
+    val stats: StateFlow<VpnTunnelStats> = orchestrator.stats
+    val diagnostics: StateFlow<ConnectionDiagnostics> = orchestrator.diagnostics
+    val activeServer: StateFlow<VpnServer?> = orchestrator.activeServer
+
+    val smartSettings: StateFlow<SmartConnectionSettings> = repository.smartSettingsFlow
+        .stateIn(viewModelScope, SharingStarted.Eagerly, SmartConnectionSettings())
 
     val backendUrl: StateFlow<String> = repository.backendUrlFlow
-        .stateIn(viewModelScope, SharingStarted.Eagerly, VpnRepository.DEFAULT_BACKEND_URL)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, VpnRepository.DEFAULT_DJANGO_URL)
 
     val authToken: StateFlow<String?> = repository.authTokenFlow
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     val username: StateFlow<String> = repository.usernameFlow
-        .stateIn(viewModelScope, SharingStarted.Eagerly, "WireGuard User")
+        .stateIn(viewModelScope, SharingStarted.Eagerly, "SmartVPN User")
+
+    val userTier: StateFlow<String> = repository.userTierFlow
+        .stateIn(viewModelScope, SharingStarted.Eagerly, "Pro")
 
     private val _servers = MutableStateFlow<List<VpnServer>>(repository.getDefaultServers())
     val servers: StateFlow<List<VpnServer>> = _servers.asStateFlow()
@@ -52,55 +70,59 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
     private val _selectedServer = MutableStateFlow<VpnServer>(repository.getDefaultServers().first())
     val selectedServer: StateFlow<VpnServer> = _selectedServer.asStateFlow()
 
-    private val _currentPeerConfig = MutableStateFlow<PeerConfigResponse?>(null)
-    val currentPeerConfig: StateFlow<PeerConfigResponse?> = _currentPeerConfig.asStateFlow()
-
-    private val _securityStatus = MutableStateFlow(SecurityLeakStatus())
-    val securityStatus: StateFlow<SecurityLeakStatus> = _securityStatus.asStateFlow()
-
     private val _vpnPermissionIntent = MutableStateFlow<Intent?>(null)
     val vpnPermissionIntent: StateFlow<Intent?> = _vpnPermissionIntent.asStateFlow()
 
     private val _uiErrorMessage = MutableStateFlow<String?>(null)
     val uiErrorMessage: StateFlow<String?> = _uiErrorMessage.asStateFlow()
 
-    private val _leaseRemainingSeconds = MutableStateFlow<Long>(0L)
-    val leaseRemainingSeconds: StateFlow<Long> = _leaseRemainingSeconds.asStateFlow()
+    private val _registeredDevices = MutableStateFlow<List<RegisteredDevice>>(emptyList())
+    val registeredDevices: StateFlow<List<RegisteredDevice>> = _registeredDevices.asStateFlow()
 
-    private var leaseMonitorJob: Job? = null
     private var notificationSyncJob: Job? = null
 
     init {
-        // Register receiver hook for notification Disconnect action
+        // Register notification Disconnect hook
         VpnActionReceiver.onDisconnectRequested = {
             disconnect()
         }
 
-        // Fetch server list
         loadServers()
+        loadDevices()
 
-        // Sync foreground notification with telemetry while connected
+        // Sync repository settings to orchestrator
+        viewModelScope.launch {
+            smartSettings.collect { settings ->
+                orchestrator.settings = settings
+            }
+        }
+
+        // Sync errors from orchestrator
+        viewModelScope.launch {
+            orchestrator.errorMessage.collect { err ->
+                if (err != null) {
+                    _uiErrorMessage.value = err
+                }
+            }
+        }
+
+        // Notification management
         notificationSyncJob = viewModelScope.launch {
             connectionState.collect { state ->
-                when (state) {
-                    VpnConnectionState.CONNECTED -> {
+                when {
+                    state.isStableConnected -> {
                         _uiErrorMessage.value = null
                         startNotificationSync()
-                        startLeaseMonitoring()
                     }
-                    VpnConnectionState.DISCONNECTED -> {
+                    state == VpnSessionState.DISCONNECTED -> {
                         notificationManager.cancelNotification()
-                        stopLeaseMonitoring()
-                        _leaseRemainingSeconds.value = 0L
                     }
-                    VpnConnectionState.CONNECTING -> {
+                    state == VpnSessionState.FAILED -> {
+                        notificationManager.cancelNotification()
+                    }
+                    state.isProgressing -> {
                         notificationManager.showConnectingNotification(_selectedServer.value)
                     }
-                    VpnConnectionState.ERROR -> {
-                        notificationManager.cancelNotification()
-                        stopLeaseMonitoring()
-                    }
-                    else -> Unit
                 }
             }
         }
@@ -116,90 +138,88 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun loadDevices() {
+        viewModelScope.launch {
+            _registeredDevices.value = repository.getRegisteredDevices()
+        }
+    }
+
     fun selectServer(server: VpnServer) {
-        if (connectionState.value == VpnConnectionState.CONNECTED) {
-            // Disconnect before switching servers
-            viewModelScope.launch {
-                disconnect()
-                _selectedServer.value = server
-            }
-        } else {
-            _selectedServer.value = server
+        if (connectionState.value.isStableConnected) {
+            disconnect()
+        }
+        _selectedServer.value = server
+    }
+
+    fun selectProtocol(protocol: VpnProtocol) {
+        viewModelScope.launch {
+            val updated = smartSettings.value.copy(preferredProtocol = protocol)
+            repository.updateSmartSettings(updated)
+            orchestrator.settings = updated
+        }
+    }
+
+    fun updateSettings(settings: SmartConnectionSettings) {
+        viewModelScope.launch {
+            repository.updateSmartSettings(settings)
+            orchestrator.settings = settings
+        }
+    }
+
+    fun toggleFavorite(serverId: String) {
+        viewModelScope.launch {
+            repository.toggleFavorite(serverId)
+            loadServers()
+        }
+    }
+
+    fun revokeDevice(deviceId: String) {
+        viewModelScope.launch {
+            repository.revokeDevice(deviceId)
+            loadDevices()
         }
     }
 
     /**
-     * Entry point when user taps Connect button.
-     * Evaluates VpnService preparation first.
+     * Entry point when user taps the main Connect button.
      */
     fun startConnection() {
         _uiErrorMessage.value = null
-        val prepareIntent = vpnManager.prepareVpn()
+        val prepareIntent = wireGuardManager.prepareVpn()
         if (prepareIntent != null) {
-            // Prompt the user for VPN permission
             _vpnPermissionIntent.value = prepareIntent
         } else {
-            // Already authorized, proceed directly
-            proceedWithConnection()
+            proceedWithOrchestratedConnection()
         }
     }
 
     fun onVpnPermissionResult(isGranted: Boolean) {
         _vpnPermissionIntent.value = null
         if (isGranted) {
-            proceedWithConnection()
+            proceedWithOrchestratedConnection()
         } else {
-            _uiErrorMessage.value = "VPN permission denied by user. Android requires VPN authorization to establish a secure WireGuard tunnel."
+            _uiErrorMessage.value = "VPN permission denied by user. Android requires VPN authorization to establish an encrypted tunnel."
         }
     }
 
-    private fun proceedWithConnection() {
-        viewModelScope.launch {
-            try {
-                _uiErrorMessage.value = null
+    private fun proceedWithOrchestratedConnection() {
+        _uiErrorMessage.value = null
+        val candidates = _servers.value
+        val preferred = _selectedServer.value
 
-                // 1. Authenticate with FastAPI if token is missing
-                var token = authToken.value
-                if (token.isNullOrBlank()) {
-                    val authResult = repository.loginAsGuest()
-                    if (authResult.isSuccess) {
-                        token = authResult.getOrNull()?.accessToken
-                    }
-                }
-
-                // 2. Generate/retrieve client public key
-                val clientPublicKey = vpnManager.getOrCreateClientPublicKey()
-
-                // 3. Negotiate dynamic peer configuration with FastAPI backend
-                val peerResult = repository.registerPeer(_selectedServer.value, clientPublicKey)
-                if (peerResult.isFailure) {
-                    _uiErrorMessage.value = "Failed to obtain VPN configuration from backend: ${peerResult.exceptionOrNull()?.message}"
-                    return@launch
-                }
-
-                val peerConfig = peerResult.getOrThrow()
-                _currentPeerConfig.value = peerConfig
-
-                // 4. Start the WireGuard tunnel with official GoBackend
-                val tunnelResult = vpnManager.startTunnel(peerConfig)
-                if (tunnelResult.isFailure) {
-                    _uiErrorMessage.value = "WireGuard tunnel startup failed: ${tunnelResult.exceptionOrNull()?.message}"
-                }
-            } catch (e: Exception) {
-                _uiErrorMessage.value = "Connection error: ${e.message}"
+        orchestrator.startConnection(
+            serverCandidates = candidates,
+            preferredServer = preferred,
+            fetchConfigFn = { server, protocol ->
+                val clientPublicKey = wireGuardManager.getOrCreateClientPublicKey()
+                repository.registerPeerSession(server, protocol, clientPublicKey)
             }
-        }
+        )
     }
 
     fun disconnect() {
-        viewModelScope.launch {
-            _currentPeerConfig.value?.let { config ->
-                repository.revokePeer(config.peerId)
-            }
-            vpnManager.stopTunnel()
-            _currentPeerConfig.value = null
-            notificationManager.cancelNotification()
-        }
+        orchestrator.disconnect()
+        notificationManager.cancelNotification()
     }
 
     fun clearError() {
@@ -218,6 +238,7 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
             val result = repository.login(username, pass)
             if (result.isSuccess) {
                 onResult(true, null)
+                loadDevices()
             } else {
                 onResult(false, result.exceptionOrNull()?.message ?: "Authentication failed")
             }
@@ -226,7 +247,7 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
 
     fun logout() {
         viewModelScope.launch {
-            if (connectionState.value == VpnConnectionState.CONNECTED) {
+            if (connectionState.value.isStableConnected) {
                 disconnect()
             }
             repository.clearAuthToken()
@@ -235,57 +256,18 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun startNotificationSync() {
         viewModelScope.launch {
-            while (isActive && connectionState.value == VpnConnectionState.CONNECTED) {
-                notificationManager.showConnectedNotification(_selectedServer.value, stats.value)
+            while (isActive && connectionState.value.isStableConnected) {
+                val srv = orchestrator.activeServer.value ?: _selectedServer.value
+                notificationManager.showConnectedNotification(srv, stats.value)
                 delay(1000)
             }
         }
     }
 
-    /**
-     * Monitors configuration lease expiration and performs automated peer renewal.
-     */
-    private fun startLeaseMonitoring() {
-        stopLeaseMonitoring()
-        leaseMonitorJob = viewModelScope.launch {
-            while (isActive && connectionState.value == VpnConnectionState.CONNECTED) {
-                val config = _currentPeerConfig.value
-                if (config != null) {
-                    val currentEpoch = System.currentTimeMillis() / 1000
-                    val remaining = config.expiresAtEpochSeconds - currentEpoch
-                    _leaseRemainingSeconds.value = remaining.coerceAtLeast(0L)
-
-                    // Auto-renew if less than 5 minutes remain
-                    if (remaining in 1..300) {
-                        val renewal = repository.renewPeer(config.peerId)
-                        if (renewal.isSuccess) {
-                            val newExpiry = renewal.getOrThrow()
-                            _currentPeerConfig.value = config.copy(expiresAtEpochSeconds = newExpiry)
-                        }
-                    } else if (remaining <= 0) {
-                        // Lease expired and peer revoked on server
-                        _uiErrorMessage.value = "VPN configuration lease expired. Reconnecting..."
-                        disconnect()
-                        delay(1000)
-                        startConnection()
-                        break
-                    }
-                }
-                delay(2000)
-            }
-        }
-    }
-
-    private fun stopLeaseMonitoring() {
-        leaseMonitorJob?.cancel()
-        leaseMonitorJob = null
-    }
-
     override fun onCleared() {
         super.onCleared()
         notificationSyncJob?.cancel()
-        stopLeaseMonitoring()
-        vpnManager.cleanup()
+        orchestrator.cleanup()
         notificationManager.cancelNotification()
     }
 }

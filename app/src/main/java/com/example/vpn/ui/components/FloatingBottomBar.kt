@@ -12,10 +12,11 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Analytics
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.Public
-import androidx.compose.material.icons.filled.Speed
-import androidx.compose.material.icons.filled.WorkspacePremium
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -31,7 +32,13 @@ import com.example.ui.theme.VpnNeonGreen
 import com.example.ui.theme.VpnSurfaceCard
 
 /**
- * Floating bottom navigation bar matching the Satellite VPN mockup.
+ * Floating bottom navigation bar matching the Satellite VPN aesthetic.
+ * Tabs:
+ * 0: Dashboard
+ * 1: Servers / Locations
+ * 2: 100 Networking Catalog
+ * 3: Quality Gate Diagnostics
+ * 4: Settings & Account
  */
 @Composable
 fun FloatingBottomBar(
@@ -42,7 +49,7 @@ fun FloatingBottomBar(
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 24.dp, vertical = 12.dp),
+            .padding(horizontal = 20.dp, vertical = 10.dp),
         contentAlignment = Alignment.Center
     ) {
         Row(
@@ -51,7 +58,7 @@ fun FloatingBottomBar(
                 .clip(RoundedCornerShape(32.dp))
                 .background(VpnSurfaceCard)
                 .border(1.dp, VpnBorderDark, RoundedCornerShape(32.dp))
-                .padding(horizontal = 16.dp, vertical = 8.dp),
+                .padding(horizontal = 12.dp, vertical = 6.dp),
             horizontalArrangement = Arrangement.SpaceAround,
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -70,18 +77,25 @@ fun FloatingBottomBar(
                 onClick = { onTabSelected(1) }
             )
             BottomNavItem(
-                icon = Icons.Default.Speed,
-                contentDescription = "Telemetry",
+                icon = Icons.Default.MenuBook,
+                contentDescription = "100 Catalog",
                 isSelected = currentTabIndex == 2,
-                testTag = "nav_tab_telemetry",
+                testTag = "nav_tab_catalog",
                 onClick = { onTabSelected(2) }
             )
             BottomNavItem(
-                icon = Icons.Default.WorkspacePremium,
-                contentDescription = "Premium",
+                icon = Icons.Default.Analytics,
+                contentDescription = "Diagnostics",
                 isSelected = currentTabIndex == 3,
-                testTag = "nav_tab_premium",
+                testTag = "nav_tab_diagnostics",
                 onClick = { onTabSelected(3) }
+            )
+            BottomNavItem(
+                icon = Icons.Default.Settings,
+                contentDescription = "Settings",
+                isSelected = currentTabIndex == 4,
+                testTag = "nav_tab_settings",
+                onClick = { onTabSelected(4) }
             )
         }
     }
@@ -97,7 +111,7 @@ fun BottomNavItem(
 ) {
     Box(
         modifier = Modifier
-            .size(44.dp)
+            .size(42.dp)
             .clip(CircleShape)
             .background(if (isSelected) Color(0xFF23352B) else Color.Transparent)
             .clickable(onClick = onClick)
@@ -108,7 +122,7 @@ fun BottomNavItem(
             imageVector = icon,
             contentDescription = contentDescription,
             tint = if (isSelected) VpnNeonGreen else TextMuted,
-            modifier = Modifier.size(22.dp)
+            modifier = Modifier.size(20.dp)
         )
     }
 }

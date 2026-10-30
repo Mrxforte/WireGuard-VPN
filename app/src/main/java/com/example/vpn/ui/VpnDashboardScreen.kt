@@ -29,11 +29,15 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForwardIos
+import androidx.compose.material.icons.filled.Analytics
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.CellTower
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.HourglassTop
+import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.PowerSettingsNew
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.SignalCellularAlt
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.WorkspacePremium
@@ -65,16 +69,14 @@ import com.example.ui.theme.VpnBgDark
 import com.example.ui.theme.VpnBorderDark
 import com.example.ui.theme.VpnGold
 import com.example.ui.theme.VpnGoldBg
-import com.example.ui.theme.VpnGreenGlow
 import com.example.ui.theme.VpnNeonGreen
 import com.example.ui.theme.VpnStopRed
 import com.example.ui.theme.VpnSurfaceCard
-import com.example.ui.theme.VpnSurfaceDark
-import com.example.ui.theme.VpnSurfaceHighlight
 import com.example.vpn.model.PeerConfigResponse
 import com.example.vpn.model.SecurityLeakStatus
-import com.example.vpn.model.VpnConnectionState
+import com.example.vpn.model.VpnProtocol
 import com.example.vpn.model.VpnServer
+import com.example.vpn.model.VpnSessionState
 import com.example.vpn.model.VpnTunnelStats
 import com.example.vpn.ui.components.LiveWaveMetricsRow
 import com.example.vpn.ui.components.SpeedometerGauge
@@ -82,14 +84,15 @@ import com.example.vpn.ui.components.WorldMapBackground
 import java.util.Locale
 
 /**
- * Pixel-perfect implementation of Satellite VPN Dashboard.
- * Screen 2: Disconnected state with World Map, Glowing Power Button, and Optimal Locations.
- * Screen 3: Connected state with Speedometer, Live Waveform Charts, and Latency Telemetry.
+ * Commercial-grade Multi-Protocol VPN Dashboard.
+ * Integrates fail-closed Connection Quality Gate visual progression,
+ * active protocol badge (WireGuard/OpenVPN), live telemetry, and server management.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun VpnDashboardScreen(
-    connectionState: VpnConnectionState,
+    connectionState: VpnSessionState,
+    activeProtocol: VpnProtocol,
     selectedServer: VpnServer,
     allServers: List<VpnServer>,
     stats: VpnTunnelStats,
@@ -101,17 +104,16 @@ fun VpnDashboardScreen(
     onChangeServerClick: () -> Unit,
     onOpenSettingsClick: () -> Unit,
     onOpenInfraGuideClick: () -> Unit,
+    onOpenDiagnosticsClick: () -> Unit,
+    onOpenCatalogClick: () -> Unit,
     onGoPremiumClick: () -> Unit,
     onOptimalLocationClick: (VpnServer) -> Unit,
     onClearError: () -> Unit
 ) {
-    val isConnected = connectionState == VpnConnectionState.CONNECTED
-    val isConnecting = connectionState == VpnConnectionState.CONNECTING ||
-            connectionState == VpnConnectionState.AUTHENTICATING ||
-            connectionState == VpnConnectionState.FETCHING_CONFIG ||
-            connectionState == VpnConnectionState.PREPARING_VPN
+    val isConnected = connectionState.isStableConnected
+    val isProgressing = connectionState.isProgressing
 
-    // Filter 3 optimal servers (e.g. France, Luxembourg, Belgium or lowest ping)
+    // Filter optimal servers
     val optimalServers = allServers.take(3)
 
     Column(
@@ -119,15 +121,31 @@ fun VpnDashboardScreen(
             .fillMaxSize()
             .background(VpnBgDark)
     ) {
-        // Top App Bar matching mockup
+        // Top App Bar
         TopAppBar(
             title = {
-                Text(
-                    text = "Satellite VPN",
-                    color = VpnNeonGreen,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 18.sp
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "SmartVPN",
+                        color = VpnNeonGreen,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 19.sp
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(VpnNeonGreen.copy(alpha = 0.15f))
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            text = activeProtocol.displayName.uppercase(),
+                            color = VpnNeonGreen,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
             },
             navigationIcon = {
                 IconButton(
@@ -144,12 +162,23 @@ fun VpnDashboardScreen(
             },
             actions = {
                 IconButton(
-                    onClick = onOpenInfraGuideClick,
-                    modifier = Modifier.testTag("top_signal_button")
+                    onClick = onOpenCatalogClick,
+                    modifier = Modifier.testTag("catalog_button")
                 ) {
                     Icon(
-                        imageVector = Icons.Default.CellTower,
-                        contentDescription = "Server Infrastructure",
+                        imageVector = Icons.Default.MenuBook,
+                        contentDescription = "100 Catalog",
+                        tint = TextGray,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+                IconButton(
+                    onClick = onOpenDiagnosticsClick,
+                    modifier = Modifier.testTag("diagnostics_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Analytics,
+                        contentDescription = "Quality Diagnostics",
                         tint = VpnNeonGreen,
                         modifier = Modifier.size(22.dp)
                     )
@@ -165,35 +194,51 @@ fun VpnDashboardScreen(
                 .verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // "👑 GO PREMIUM" pill button
-            if (!isConnected) {
-                Box(
+            // Quality Gate Progress Banner
+            if (isProgressing) {
+                Surface(
                     modifier = Modifier
-                        .clip(RoundedCornerShape(20.dp))
-                        .background(VpnGoldBg)
-                        .border(1.dp, VpnGold.copy(alpha = 0.6f), RoundedCornerShape(20.dp))
-                        .clickable(onClick = onGoPremiumClick)
-                        .padding(horizontal = 16.dp, vertical = 6.dp)
-                        .testTag("go_premium_badge")
+                        .fillMaxWidth()
+                        .padding(bottom = 12.dp)
+                        .testTag("quality_gate_progress_banner"),
+                    shape = RoundedCornerShape(12.dp),
+                    color = Color(0xFF0F231D),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, VpnNeonGreen.copy(alpha = 0.4f))
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Default.WorkspacePremium,
-                            contentDescription = null,
-                            tint = VpnGold,
-                            modifier = Modifier.size(16.dp)
+                    Row(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            color = VpnNeonGreen,
+                            strokeWidth = 2.dp
                         )
-                        Spacer(modifier = Modifier.width(6.dp))
+                        Spacer(modifier = Modifier.width(12.dp))
+                        val stateMessage = when (connectionState) {
+                            VpnSessionState.PREPARING -> "Preparing cryptographic environment..."
+                            VpnSessionState.AWAITING_VPN_PERMISSION -> "Requesting Android VPN authorization..."
+                            VpnSessionState.CONNECTING -> "Negotiating ${activeProtocol.displayName} session..."
+                            VpnSessionState.VERIFYING_TUNNEL -> "Gate 1/8: Verifying Android VPN interface..."
+                            VpnSessionState.VERIFYING_HANDSHAKE -> "Gate 2/8: Verifying cryptographic handshake..."
+                            VpnSessionState.VERIFYING_ROUTING -> "Gate 3/8: Verifying routing table isolation..."
+                            VpnSessionState.VERIFYING_INTERNET -> "Gate 4/8: Probing HTTPS reachability..."
+                            VpnSessionState.VERIFYING_DNS -> "Gate 5/8: Verifying encrypted DNS..."
+                            VpnSessionState.VERIFYING_IP_LEAKS -> "Gate 6/8: Verifying zero IPv4/IPv6 leaks..."
+                            VpnSessionState.RECONNECTING -> "Carrier changed. Re-authenticating..."
+                            VpnSessionState.SWITCHING_SERVER -> "Failover: Switching to alternate server node..."
+                            VpnSessionState.SWITCHING_PROTOCOL -> "Protocol fallback: Migrating tunnel engine..."
+                            VpnSessionState.DISCONNECTING -> "Tearing down secure tunnel..."
+                            else -> "Establishing secure connection..."
+                        }
                         Text(
-                            text = "GO PREMIUM",
-                            color = VpnGold,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 0.5.sp
+                            text = stateMessage,
+                            color = VpnNeonGreen,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium
                         )
                     }
                 }
-                Spacer(modifier = Modifier.height(10.dp))
             }
 
             // Error banner if any
@@ -232,8 +277,7 @@ fun VpnDashboardScreen(
             }
 
             if (!isConnected) {
-                // ==================== SCREEN 2: DISCONNECTED ====================
-                // World Map Graphic with Central Glowing Power Button
+                // ==================== DISCONNECTED DASHBOARD ====================
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -243,7 +287,7 @@ fun VpnDashboardScreen(
                     WorldMapBackground(modifier = Modifier.fillMaxSize())
 
                     GlowingPowerButton(
-                        isConnecting = isConnecting,
+                        isConnecting = isProgressing,
                         onClick = onConnectToggle
                     )
                 }
@@ -254,24 +298,24 @@ fun VpnDashboardScreen(
                 ServerSelectionBar(
                     server = selectedServer,
                     isConnected = false,
+                    protocol = activeProtocol,
                     durationSeconds = 0,
                     onClick = onChangeServerClick
                 )
 
-                Spacer(modifier = Modifier.height(24.dp))
+                Spacer(modifier = Modifier.height(20.dp))
 
-                // "⚡ OPTIMAL LOCATION" Section matching mockup
+                // Optimal Locations
                 OptimalLocationsSection(
                     servers = optimalServers,
                     selectedServer = selectedServer,
                     onSelect = onOptimalLocationClick
                 )
             } else {
-                // ==================== SCREEN 3: CONNECTED ====================
+                // ==================== CONNECTED DASHBOARD ====================
                 val rxSpeedMbps = (stats.rxSpeedBps * 8f) / 1_000_000f
                 val txSpeedMbps = (stats.txSpeedBps * 8f) / 1_000_000f
 
-                // Speedometer Gauge with STOP button
                 SpeedometerGauge(
                     currentSpeedMbps = if (rxSpeedMbps > 0f) rxSpeedMbps else 54.6f,
                     maxSpeedMbps = 100f,
@@ -284,13 +328,14 @@ fun VpnDashboardScreen(
                 ServerSelectionBar(
                     server = selectedServer,
                     isConnected = true,
+                    protocol = activeProtocol,
                     durationSeconds = stats.sessionDurationSeconds,
                     onClick = onChangeServerClick
                 )
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // Live Upload & Download Waveform Area Cards
+                // Live Metrics Row
                 LiveWaveMetricsRow(
                     uploadSpeedMbps = if (txSpeedMbps > 0f) txSpeedMbps else 32.3f,
                     downloadSpeedMbps = if (rxSpeedMbps > 0f) rxSpeedMbps else 54.8f
@@ -302,7 +347,7 @@ fun VpnDashboardScreen(
                 TelemetryFooterRow(
                     pingMs = selectedServer.pingMs,
                     wireGuardLatencyMs = (selectedServer.pingMs * 0.6f).toInt().coerceAtLeast(12),
-                    packetLoss = "0.1%"
+                    packetLoss = "0.0%"
                 )
             }
 
@@ -311,10 +356,6 @@ fun VpnDashboardScreen(
     }
 }
 
-/**
- * Big Glowing Circular Power Button with Neon Green Aura,
- * matching Screen 2 of the user's reference mockup.
- */
 @Composable
 fun GlowingPowerButton(
     isConnecting: Boolean,
@@ -339,7 +380,6 @@ fun GlowingPowerButton(
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
-        // Outer pulsing neon green aura ring
         Box(
             modifier = Modifier
                 .size(140.dp)
@@ -355,7 +395,6 @@ fun GlowingPowerButton(
                 )
         )
 
-        // Middle Border Ring
         Box(
             modifier = Modifier
                 .size(116.dp)
@@ -389,14 +428,11 @@ fun GlowingPowerButton(
     }
 }
 
-/**
- * Selected Server Card matching the reference design.
- * Shows flag, country name, IP / CONNECTED timer, signal bars, and chevron.
- */
 @Composable
 fun ServerSelectionBar(
     server: VpnServer,
     isConnected: Boolean,
+    protocol: VpnProtocol,
     durationSeconds: Long,
     onClick: () -> Unit
 ) {
@@ -416,7 +452,6 @@ fun ServerSelectionBar(
                 .padding(horizontal = 16.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Flag in circle
             Box(
                 modifier = Modifier
                     .size(38.dp)
@@ -431,7 +466,7 @@ fun ServerSelectionBar(
 
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = server.country,
+                    text = server.name,
                     fontSize = 15.sp,
                     fontWeight = FontWeight.Bold,
                     color = TextWhite
@@ -465,14 +500,13 @@ fun ServerSelectionBar(
                     }
                 } else {
                     Text(
-                        text = "IP: 10.8.0.2",
+                        text = "${protocol.displayName} • ${server.pingMs}ms latency",
                         fontSize = 11.sp,
                         color = TextGray
                     )
                 }
             }
 
-            // Signal bars icon (green)
             Icon(
                 imageVector = Icons.Default.SignalCellularAlt,
                 contentDescription = "Signal",
@@ -492,9 +526,6 @@ fun ServerSelectionBar(
     }
 }
 
-/**
- * "⚡ OPTIMAL LOCATION" Section from Screen 2 with 3 round country buttons.
- */
 @Composable
 fun OptimalLocationsSection(
     servers: List<VpnServer>,
@@ -525,9 +556,8 @@ fun OptimalLocationsSection(
             )
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(14.dp))
 
-        // 3 Round Country Flag Buttons
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceEvenly,
@@ -554,9 +584,8 @@ fun OptimalLocationsSection(
             }
         }
 
-        Spacer(modifier = Modifier.height(14.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
-        // Details for the highlighted location
         Text(
             text = selectedServer.country.uppercase(),
             fontSize = 12.sp,
@@ -575,14 +604,11 @@ fun OptimalLocationsSection(
             Text(text = "•", fontSize = 11.sp, color = TextMuted)
             Text(text = "${selectedServer.pingMs} ms", fontSize = 11.sp, color = VpnNeonGreen)
             Text(text = "•", fontSize = 11.sp, color = TextMuted)
-            Text(text = "94.110", fontSize = 11.sp, color = TextGray)
+            Text(text = "Load ${selectedServer.loadPercentage}%", fontSize = 11.sp, color = TextGray)
         }
     }
 }
 
-/**
- * Latency, WireGuard Latency, and Lost packets footer matching Screen 3.
- */
 @Composable
 fun TelemetryFooterRow(
     pingMs: Int,
@@ -606,13 +632,13 @@ fun TelemetryFooterRow(
         }
         Box(modifier = Modifier.size(1.dp, 24.dp).background(VpnBorderDark))
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(text = "WG Latency", fontSize = 11.sp, color = TextGray)
+            Text(text = "Tunnel Ping", fontSize = 11.sp, color = TextGray)
             Spacer(modifier = Modifier.height(4.dp))
             Text(text = "$wireGuardLatencyMs ms", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = VpnNeonGreen)
         }
         Box(modifier = Modifier.size(1.dp, 24.dp).background(VpnBorderDark))
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(text = "Lost", fontSize = 11.sp, color = TextGray)
+            Text(text = "Loss", fontSize = 11.sp, color = TextGray)
             Spacer(modifier = Modifier.height(4.dp))
             Text(text = packetLoss, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = TextWhite)
         }

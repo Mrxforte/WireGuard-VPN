@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  web:
+    build: .
+    container_name: django_vpn_backend
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      - DJANGO_DEBUG=False
+      - DJANGO_ALLOWED_HOSTS=*
+      - DJANGO_SECRET_KEY=production-django-vpn-key-change-in-prod-2026
+      - POSTGRES_DB=vpn_db
+      - POSTGRES_USER=vpn_user
+      - POSTGRES_PASSWORD=secure_vpn_password_2026
+      - POSTGRES_HOST=db
+      - POSTGRES_PORT=5432
+      - NODE_AGENT_SHARED_SECRET=secure-agent-token-2026
+    depends_on:
+      - db
+      - redis
+
+  db:
+    image: postgres:16-alpine
+    container_name: django_vpn_postgres
+    restart: always
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_DB=vpn_db
+      - POSTGRES_USER=vpn_user
+      - POSTGRES_PASSWORD=secure_vpn_password_2026
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    container_name: django_vpn_redis
+    restart: always
+    ports:
+      - "6379:6379"
+
+volumes:
+  postgres_data:

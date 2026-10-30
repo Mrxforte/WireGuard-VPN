@@ -25,15 +25,19 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.theme.VpnBgDark
-import com.example.vpn.model.VpnConnectionState
+import com.example.vpn.model.SecurityLeakStatus
+import com.example.vpn.model.VpnSessionState
+import com.example.vpn.ui.AccountScreen
 import com.example.vpn.ui.BackendSettingsDialog
+import com.example.vpn.ui.DiagnosticsScreen
 import com.example.vpn.ui.InfrastructureGuideDialog
 import com.example.vpn.ui.LocationsScreen
 import com.example.vpn.ui.PremiumScreen
+import com.example.vpn.ui.SmartSettingsScreen
+import com.example.vpn.ui.TechnologyCatalogScreen
 import com.example.vpn.ui.VpnDashboardScreen
 import com.example.vpn.ui.VpnViewModel
 import com.example.vpn.ui.components.FloatingBottomBar
@@ -59,22 +63,28 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun VpnAppRoot(viewModel: VpnViewModel) {
     val connectionState by viewModel.connectionState.collectAsState()
+    val activeProtocol by viewModel.activeProtocol.collectAsState()
     val selectedServer by viewModel.selectedServer.collectAsState()
     val servers by viewModel.servers.collectAsState()
     val stats by viewModel.stats.collectAsState()
-    val securityStatus by viewModel.securityStatus.collectAsState()
-    val peerConfig by viewModel.currentPeerConfig.collectAsState()
-    val leaseSeconds by viewModel.leaseRemainingSeconds.collectAsState()
-    val uiError by viewModel.uiErrorMessage.collectAsState()
+    val diagnostics by viewModel.diagnostics.collectAsState()
+    val smartSettings by viewModel.smartSettings.collectAsState()
     val backendUrl by viewModel.backendUrl.collectAsState()
     val authToken by viewModel.authToken.collectAsState()
     val username by viewModel.username.collectAsState()
+    val userTier by viewModel.userTier.collectAsState()
+    val registeredDevices by viewModel.registeredDevices.collectAsState()
+    val uiError by viewModel.uiErrorMessage.collectAsState()
     val vpnPermissionIntent by viewModel.vpnPermissionIntent.collectAsState()
 
-    // Active bottom navigation tab (0: Dashboard, 1: Locations, 2: Telemetry, 3: Premium)
+    // Active bottom navigation tab:
+    // 0: Dashboard
+    // 1: Servers
+    // 2: 100 Catalog
+    // 3: Diagnostics
+    // 4: Settings
     var currentTab by remember { mutableIntStateOf(0) }
 
-    var showSettingsDialog by remember { mutableStateOf(false) }
     var showInfraGuideDialog by remember { mutableStateOf(false) }
 
     // Handle system back button to return to home dashboard
@@ -119,31 +129,34 @@ fun VpnAppRoot(viewModel: VpnViewModel) {
                 modifier = Modifier.navigationBarsPadding()
             )
         }
-    ) { innerPadding ->
+    ) { _ ->
         Box(modifier = Modifier.fillMaxSize()) {
             when (currentTab) {
-                0, 2 -> {
-                    // Dashboard (Screen 2 Disconnected / Screen 3 Connected)
+                0 -> {
+                    // Main Dashboard
                     VpnDashboardScreen(
                         connectionState = connectionState,
+                        activeProtocol = activeProtocol,
                         selectedServer = selectedServer,
                         allServers = servers,
                         stats = stats,
-                        securityStatus = securityStatus,
-                        peerConfig = peerConfig,
-                        leaseSeconds = leaseSeconds,
+                        securityStatus = SecurityLeakStatus(),
+                        peerConfig = null,
+                        leaseSeconds = 86400,
                         errorMessage = uiError,
                         onConnectToggle = {
-                            if (connectionState == VpnConnectionState.CONNECTED) {
+                            if (connectionState.isStableConnected) {
                                 viewModel.disconnect()
                             } else {
                                 viewModel.startConnection()
                             }
                         },
                         onChangeServerClick = { currentTab = 1 },
-                        onOpenSettingsClick = { showSettingsDialog = true },
+                        onOpenSettingsClick = { currentTab = 4 },
                         onOpenInfraGuideClick = { showInfraGuideDialog = true },
-                        onGoPremiumClick = { currentTab = 3 },
+                        onOpenDiagnosticsClick = { currentTab = 3 },
+                        onOpenCatalogClick = { currentTab = 2 },
+                        onGoPremiumClick = { currentTab = 4 },
                         onOptimalLocationClick = { server ->
                             viewModel.selectServer(server)
                         },
@@ -151,7 +164,7 @@ fun VpnAppRoot(viewModel: VpnViewModel) {
                     )
                 }
                 1 -> {
-                    // Locations List (Screen 4: 20+ countries, search bar, service filters)
+                    // Server Locations List
                     LocationsScreen(
                         servers = servers,
                         selectedServer = selectedServer,
@@ -162,32 +175,31 @@ fun VpnAppRoot(viewModel: VpnViewModel) {
                         onBackClick = { currentTab = 0 }
                     )
                 }
+                2 -> {
+                    // 100 Networking Catalog
+                    TechnologyCatalogScreen(
+                        onBackClick = { currentTab = 0 }
+                    )
+                }
                 3 -> {
-                    // Premium Screen (Screen 5: Features grid, 3-tier pricing plans, Get Premium button)
-                    PremiumScreen(
-                        onBackClick = { currentTab = 0 },
-                        onPlanSubscribed = { _ ->
-                            currentTab = 0
-                        }
+                    // Connection Quality Diagnostics
+                    DiagnosticsScreen(
+                        diagnostics = diagnostics,
+                        onBackClick = { currentTab = 0 }
+                    )
+                }
+                4 -> {
+                    // Smart Settings
+                    SmartSettingsScreen(
+                        settings = smartSettings,
+                        backendUrl = backendUrl,
+                        onSaveSettings = { updated -> viewModel.updateSettings(updated) },
+                        onSaveBackendUrl = { url -> viewModel.updateBackendUrl(url) },
+                        onBackClick = { currentTab = 0 }
                     )
                 }
             }
         }
-    }
-
-    // FastAPI Backend & Auth Settings Dialog
-    if (showSettingsDialog) {
-        BackendSettingsDialog(
-            currentUrl = backendUrl,
-            authToken = authToken,
-            username = username,
-            onSaveUrl = { url -> viewModel.updateBackendUrl(url) },
-            onLogin = { user, pass ->
-                viewModel.login(user, pass) { _, _ -> }
-            },
-            onLogout = { viewModel.logout() },
-            onDismiss = { showSettingsDialog = false }
-        )
     }
 
     // Server Infrastructure Deployment Guide Dialog

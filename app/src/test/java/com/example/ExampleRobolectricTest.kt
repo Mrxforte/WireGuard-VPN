@@ -54,9 +54,9 @@ class ExampleRobolectricTest {
 
     val peer = wgConfig.peers.first()
     // Verify zero-leak full tunnel allowed IPs: both 0.0.0.0/0 (IPv4) and ::/0 (IPv6)
-    val allowedIps = peer.allowedIps.map { it.toString() }
-    assertTrue("Should contain IPv4 full route", allowedIps.any { it.contains("0.0.0.0/0") })
-    assertTrue("Should contain IPv6 full route", allowedIps.any { it.contains("::/0") })
+    val allowedIps = peer.allowedIps
+    assertTrue("Should contain IPv4 full route", allowedIps.any { it.address is java.net.Inet4Address && it.mask == 0 })
+    assertTrue("Should contain IPv6 full route", allowedIps.any { it.address is java.net.Inet6Address && it.mask == 0 })
 
     // Verify interface MTU and DNS
     val iface = wgConfig.`interface`
